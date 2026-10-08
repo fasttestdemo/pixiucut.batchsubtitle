@@ -158,6 +158,110 @@
     return phase === 'extract' ? '提取音频' : '识别中'
   }
 
+  /** 与 manifest.mcp.tools 同名同集。登记时按这个名单，少一条或多一条宿主都会拒绝。 */
+  var MCP_TOOLS = ['start_subtitle_batch', 'subtitle_batch_status', 'stop_subtitle_batch']
+
+  var STATUS_KEYS = {
+    '等待': 'waiting',
+    '提取音频': 'extracting',
+    '识别中': 'recognizing',
+    '完成': 'done',
+    '已跳过': 'skipped',
+    '没有识别到人声': 'silent',
+    '已停止': 'stopped',
+    '失败': 'failed',
+  }
+
+  function normalizeBatchArgs(args) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+      return { ok: false, code: 'INVALID_PARAM', message: '参数必须是对象' }
+    }
+    var sourceDir = typeof args.sourceDir === 'string' ? args.sourceDir.trim() : ''
+    var destDir = typeof args.destDir === 'string' ? args.destDir.trim() : ''
+    if (!sourceDir || !destDir) {
+      return { ok: false, code: 'INVALID_PARAM', message: '需要 sourceDir 和 destDir 两个绝对路径' }
+    }
+    var format = 'srt'
+    if (args.format != null && args.format !== '') {
+      if (typeof args.format !== 'string') {
+        return { ok: false, code: 'INVALID_PARAM', message: 'format 只能是 srt、txt 或 both' }
+      }
+      format = args.format.toLowerCase()
+      if (format !== 'srt' && format !== 'txt' && format !== 'both') {
+        return { ok: false, code: 'INVALID_PARAM', message: 'format 只能是 srt、txt 或 both' }
+      }
+    }
+    if (args.includeSubfolders != null && typeof args.includeSubfolders !== 'boolean') {
+      return { ok: false, code: 'INVALID_PARAM', message: 'includeSubfolders 必须是布尔值' }
+    }
+    if (args.overwrite != null && typeof args.overwrite !== 'boolean') {
+      return { ok: false, code: 'INVALID_PARAM', message: 'overwrite 必须是布尔值' }
+    }
+    return {
+      ok: true,
+      value: {
+        sourceDir: sourceDir,
+        destDir: destDir,
+        includeSubfolders: !!args.includeSubfolders,
+        format: format,
+        overwrite: !!args.overwrite,
+      },
+    }
+  }
+
+  function matchBatchJob(jobId, job) {
+    if (!job || !job.id) return { ok: false, code: 'NOT_FOUND', message: '还没有识别任务' }
+    var id = typeof jobId === 'string' ? jobId.trim() : ''
+    if (id && id !== job.id) return { ok: false, code: 'NOT_FOUND', message: '没有这一批任务' }
+    return { ok: true }
+  }
+
+  function summarizeBatch(job, rows) {
+    var list = []
+    var counts = {
+      waiting: 0,
+      extracting: 0,
+      recognizing: 0,
+      done: 0,
+      skipped: 0,
+      silent: 0,
+      stopped: 0,
+      failed: 0,
+    }
+    var current = null
+    var items = rows || []
+    for (var i = 0; i < items.length; i += 1) {
+      var row = items[i] || {}
+      var status = typeof row.status === 'string' ? row.status : '等待'
+      var item = {
+        name: row.name || '',
+        path: row.path || '',
+        status: status,
+        progress: row.progress || '—',
+        detail: row.detail || '',
+      }
+      list.push(item)
+      var key = STATUS_KEYS[status]
+      if (key) counts[key] += 1
+      if (status === '提取音频' || status === '识别中') current = item
+    }
+    return {
+      ok: true,
+      jobId: job && job.id ? job.id : '',
+      phase: job && job.phase ? job.phase : '',
+      sourceDir: job && job.sourceDir ? job.sourceDir : '',
+      destDir: job && job.destDir ? job.destDir : '',
+      format: job && job.format ? job.format : 'srt',
+      includeSubfolders: !!(job && job.includeSubfolders),
+      overwrite: !!(job && job.overwrite),
+      fileCount: list.length,
+      counts: counts,
+      message: job && job.message ? job.message : '',
+      current: current,
+      files: list,
+    }
+  }
+
   return {
     VIDEO_EXTS: VIDEO_EXTS,
     AUDIO_EXTS: AUDIO_EXTS,
@@ -182,5 +286,9 @@
     cuesToTxt: cuesToTxt,
     hasSpeech: hasSpeech,
     statusFromPhase: statusFromPhase,
+    MCP_TOOLS: MCP_TOOLS,
+    normalizeBatchArgs: normalizeBatchArgs,
+    matchBatchJob: matchBatchJob,
+    summarizeBatch: summarizeBatch,
   }
 })

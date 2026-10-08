@@ -28,5 +28,44 @@
     "minWidth": 760,
     "minHeight": 560,
     "resizable": true
+  },
+  "mcp": {
+    "tools": [
+      {
+        "name": "start_subtitle_batch",
+        "description": "开始把文件夹里的视频和音频识别成字幕，并写到保存目录。sourceDir 与 destDir 必须是调用方给出的绝对路径，本工具不会再弹出选文件夹。调用后马上返回 jobId。识别可能很久，请用 subtitle_batch_status 看进度，用 stop_subtitle_batch 停止。includeSubfolders 默认 false。format 取 srt、txt 或 both，默认 srt。overwrite 默认 false，已有结果会跳过；设为 true 时直接覆盖，不再向用户确认。同一时间只能跑一批。",
+        "inputSchema": {
+          "type": "object",
+          "required": ["sourceDir", "destDir"],
+          "properties": {
+            "sourceDir": { "type": "string", "description": "原素材文件夹的绝对路径。" },
+            "destDir": { "type": "string", "description": "字幕保存文件夹的绝对路径。可以与源目录相同。" },
+            "includeSubfolders": { "type": "boolean", "description": "是否包含子文件夹。默认 false。" },
+            "format": { "type": "string", "enum": ["srt", "txt", "both"], "description": "输出格式。默认 srt。" },
+            "overwrite": { "type": "boolean", "description": "为 true 时直接覆盖已有字幕，不再弹确认。默认 false，已有文件跳过。" }
+          }
+        }
+      },
+      {
+        "name": "subtitle_batch_status",
+        "description": "查询一批识别的进度。可传 start_subtitle_batch 返回的 jobId；省略则返回当前这一批。phase 为 scanning、running、done、stopped、blocked、failed。files 里是每个文件的状态。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "jobId": { "type": "string", "description": "要查询的任务号。省略则查询当前这一批。" }
+          }
+        }
+      },
+      {
+        "name": "stop_subtitle_batch",
+        "description": "停止当前这批识别。可传 jobId。已写好的字幕会保留，正在识别的那一条不写文件。调用后用 subtitle_batch_status 确认 phase 变为 stopped。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "jobId": { "type": "string", "description": "要停止的任务号。省略则停止当前这一批。" }
+          }
+        }
+      }
+    ]
   }
 }

@@ -114,3 +114,106 @@ test('页面不提供模型、语种或 Whisper 安装', function () {
   assert.doesNotMatch(app, /extractAudio/)
   assert.doesNotMatch(app, /streamIndex/)
 })
+
+test('助手参数必须自带路径，覆盖开关是布尔值', function () {
+  var ok = plan.normalizeBatchArgs({
+    sourceDir: ' D:\\素材 ',
+    destDir: 'D:\\字幕',
+    includeSubfolders: true,
+    format: 'BOTH',
+    overwrite: false,
+  })
+  assert.equal(ok.ok, true)
+  assert.deepEqual(ok.value, {
+    sourceDir: 'D:\\素材',
+    destDir: 'D:\\字幕',
+    includeSubfolders: true,
+    format: 'both',
+    overwrite: false,
+  })
+  assert.equal(plan.normalizeBatchArgs({ destDir: 'D:\\字幕' }).code, 'INVALID_PARAM')
+  assert.equal(plan.normalizeBatchArgs({ sourceDir: 'D:\\素材', destDir: 'D:\\字幕', format: 'vtt' }).code, 'INVALID_PARAM')
+  assert.equal(plan.normalizeBatchArgs({ sourceDir: 'D:\\素材', destDir: 'D:\\字幕', overwrite: 'true' }).code, 'INVALID_PARAM')
+  assert.equal(plan.normalizeBatchArgs({ sourceDir: 'D:\\素材', destDir: 'D:\\字幕' }).value.overwrite, false)
+  assert.equal(plan.normalizeBatchArgs({ sourceDir: 'D:\\素材', destDir: 'D:\\字幕' }).value.format, 'srt')
+})
+
+test('任务查询按 jobId 对上当前这一批，并汇总每行状态', function () {
+  var job = {
+    id: 'batch-1',
+    phase: 'running',
+    sourceDir: 'D:\\素材',
+    destDir: 'D:\\字幕',
+    format: 'srt',
+    includeSubfolders: false,
+    overwrite: false,
+    message: '正在处理 1/2',
+  }
+  assert.equal(plan.matchBatchJob('', null).code, 'NOT_FOUND')
+  assert.equal(plan.matchBatchJob('batch-2', job).code, 'NOT_FOUND')
+  assert.equal(plan.matchBatchJob('batch-1', job).ok, true)
+  assert.equal(plan.matchBatchJob(undefined, job).ok, true)
+  var snap = plan.summarizeBatch(job, [
+    { name: 'a.mp4', path: 'D:\\素材\\a.mp4', status: '完成', progress: '100%', detail: '' },
+    { name: 'b.mp4', path: 'D:\\素材\\b.mp4', status: '识别中', progress: '40%', detail: '' },
+  ])
+  assert.equal(snap.ok, true)
+  assert.equal(snap.jobId, 'batch-1')
+  assert.equal(snap.fileCount, 2)
+  assert.equal(snap.counts.done, 1)
+  assert.equal(snap.counts.recognizing, 1)
+  assert.equal(snap.current.name, 'b.mp4')
+})
+
+test('清单里的助手工具与登记名单一致，处理函数不弹文件框', function () {
+  var root = path.join(__dirname, '..')
+  var app = fs.readFileSync(path.join(root, 'assets', 'app.js'), 'utf8')
+  var manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'))
+  var names = manifest.mcp.tools.map(function (tool) { return tool.name })
+  assert.deepEqual(names, plan.MCP_TOOLS)
+  var localName = /^[a-z][a-z0-9_]{0,47}$/
+  manifest.mcp.tools.forEach(function (tool) {
+    assert.match(tool.name, localName)
+    assert.equal(typeof tool.description, 'string')
+    assert.ok(tool.description.length > 0 && tool.description.length <= 512)
+    assert.equal(tool.inputSchema.type, 'object')
+  })
+  assert.deepEqual(manifest.mcp.tools[0].inputSchema.required, ['sourceDir', 'destDir'])
+  function fnBody(source, name) {
+    var asyncMark = 'async function ' + name + '('
+    var syncMark = 'function ' + name + '('
+    var start = source.indexOf(asyncMark)
+    var mark = asyncMark
+    if (start < 0) {
+      start = source.indexOf(syncMark)
+      mark = syncMark
+    }
+    assert.ok(start >= 0, name)
+    var rest = source.slice(start + mark.length)
+    var cuts = []
+    var nextAsync = rest.search(/\n  async function /)
+    var nextSync = rest.search(/\n  function /)
+    if (nextAsync >= 0) cuts.push(nextAsync)
+    if (nextSync >= 0) cuts.push(nextSync)
+    var end = cuts.length ? Math.min.apply(null, cuts) : rest.length
+    return source.slice(start, start + mark.length + end)
+  }
+  ;['mcpStart', 'mcpStatus', 'mcpStop'].forEach(function (name) {
+    var body = fnBody(app, name)
+    assert.doesNotMatch(body, /pickDirectory|pickFiles|askOverwrite/)
+  })
+  assert.match(fnBody(app, 'registerMcp'), /P\.MCP_TOOLS/)
+  assert.match(fnBody(app, 'registerMcp'), /mcp\.register/)
+  var boot = fnBody(app, 'boot')
+  assert.ok(boot.indexOf('await loadPrefs()') < boot.indexOf('await registerMcp()'))
+  assert.ok(boot.indexOf('await registerMcp()') < boot.indexOf('await ensureModel()'))
+  var catalogPath = path.join(__dirname, '../../../frontend/src/agent/catalog.tools.json')
+  if (fs.existsSync(catalogPath)) {
+    var catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'))
+    var core = {}
+    catalog.forEach(function (tool) { if (tool && tool.name) core[tool.name] = true })
+    plan.MCP_TOOLS.forEach(function (name) {
+      assert.equal(core[name], undefined, name)
+    })
+  }
+})

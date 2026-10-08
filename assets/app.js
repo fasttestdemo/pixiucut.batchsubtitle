@@ -14,6 +14,11 @@
   var modelReady = false
   var modelBlocked = false
   var renderTimer = null
+  var jobLive = false
+  var jobSeq = 0
+  var currentJob = null
+  var publishedBusy = false
+  var modelCheckPromise = null
 
   function $(id) {
     return document.getElementById(id)
@@ -39,10 +44,25 @@
       .replace(/"/g, '&quot;')
   }
 
+  function publishBusy() {
+    var busy = !!(running || jobLive)
+    var root = document.querySelector('.plugin')
+    if (root) root.classList.toggle('is-running', busy)
+    if (busy !== publishedBusy) {
+      publishedBusy = busy
+      if (sdk && typeof sdk.setBusy === 'function') sdk.setBusy(busy).catch(function () {})
+    }
+  }
+
   function setRunning(on) {
     running = !!on
-    document.querySelector('.plugin').classList.toggle('is-running', running)
-    if (sdk && typeof sdk.setBusy === 'function') sdk.setBusy(running).catch(function () {})
+    publishBusy()
+    syncButtons()
+  }
+
+  function setJobLive(on) {
+    jobLive = !!on
+    publishBusy()
     syncButtons()
   }
 
@@ -92,6 +112,7 @@
     var el = $('stat')
     el.textContent = text
     el.className = 'stat ' + (kind || 'idle')
+    if (currentJob && jobLive) currentJob.message = text
   }
 
   function statusClass(status) {
@@ -151,16 +172,44 @@
   }
 
   function syncButtons() {
-    var canStart = !running && !starting && !scanning && modelReady && !modelBlocked && !!prefs.src && !!prefs.dest && rows.length > 0
+    var occupied = running || starting || scanning || jobLive
+    var canStart = !occupied && modelReady && !modelBlocked && !!prefs.src && !!prefs.dest && rows.length > 0
     $('btn-start').disabled = !canStart
-    $('btn-stop').disabled = !running || stopRequested
-    $('btn-stop').textContent = stopRequested && running ? '正在停止…' : '停止识别'
+    $('btn-stop').disabled = !jobLive || stopRequested
+    $('btn-stop').textContent = stopRequested && jobLive ? '正在停止…' : '停止识别'
+  }
+
+  function fillForm() {
+    $('src').value = prefs.src
+    $('dest').value = prefs.dest
+    $('sub').checked = prefs.includeSub
+    $('format').value = prefs.format
+    $('overwrite').checked = prefs.overwrite
+  }
+
+  function createJob() {
+    jobSeq += 1
+    return {
+      id: 'batch-' + jobSeq,
+      phase: 'running',
+      sourceDir: prefs.src,
+      destDir: prefs.dest,
+      format: prefs.format,
+      includeSubfolders: prefs.includeSub,
+      overwrite: prefs.overwrite,
+      message: '',
+    }
   }
 
   function setBanner(text, warn) {
     var el = $('banner')
     el.textContent = text
     el.classList.toggle('warn', !!warn)
+  }
+
+  function ensureModel() {
+    if (!modelCheckPromise) modelCheckPromise = checkModel()
+    return modelCheckPromise
   }
 
   async function checkModel() {
@@ -196,9 +245,14 @@
     syncButtons()
   }
 
-  async function walk(root, includeSub, skipDir) {
+  function scanStale(gen) {
+    return stopRequested || gen !== scanGen
+  }
+
+  async function walk(root, includeSub, skipDir, gen) {
     var found = []
     async function step(dir) {
+      if (scanStale(gen)) return
       var entries
       try {
         entries = await sdk.fs.readDir(dir)
@@ -206,7 +260,9 @@
         if (errCode(err) === 'HOST_DENIED') throw err
         return
       }
+      if (scanStale(gen)) return
       for (var i = 0; i < entries.length; i += 1) {
+        if (scanStale(gen)) return
         var entry = entries[i]
         if (P.isDotName(entry.name)) continue
         var full = P.joinPath(dir, entry.name)
@@ -222,8 +278,14 @@
     return found
   }
 
+  function endScan(gen) {
+    if (stopRequested) return { ok: false, code: 'CANCELLED', message: '已停止' }
+    if (gen !== scanGen) return { ok: false, code: 'SUPERSEDED', message: '文件夹正在被重新读取' }
+    return null
+  }
+
   async function scan() {
-    if (running) return
+    if (running) return { ok: false, code: 'BUSY', message: '识别进行中' }
     var gen = ++scanGen
     scanning = true
     syncButtons()
@@ -232,31 +294,35 @@
       renderList()
       if (!prefs.src) {
         setStat('未开始', 'idle')
-        return
+        return { ok: true, count: 0 }
       }
       setStat('正在读取…', 'run')
       var files
       try {
-        files = await walk(prefs.src, prefs.includeSub, P.saveDirToSkip(prefs.src, prefs.dest))
+        files = await walk(prefs.src, prefs.includeSub, P.saveDirToSkip(prefs.src, prefs.dest), gen)
       } catch (err) {
-        if (gen !== scanGen) return
+        var walked = endScan(gen)
+        if (walked) return walked
         if (errCode(err) === 'HOST_DENIED') {
           $('files-card').classList.add('is-empty')
           $('empty').innerHTML = '<p>当前环境不能读取文件夹。请在桌面端打开本插件。</p>'
           setStat('未开始', 'idle')
-          return
+          return { ok: false, code: 'HOST_DENIED', message: '当前环境不能读取文件夹' }
         }
-        notify(err && err.message ? err.message : '扫描失败', 'error')
+        var scanMessage = err && err.message ? err.message : '扫描失败'
+        if (!jobLive) notify(scanMessage, 'error')
         setStat('未开始', 'idle')
-        return
+        return { ok: false, code: errCode(err) || 'INTERNAL', message: scanMessage }
       }
-      if (gen !== scanGen) return
+      var afterWalk = endScan(gen)
+      if (afterWalk) return afterWalk
       var accepted = []
       for (var i = 0; i < files.length; i += 1) {
-        if (gen !== scanGen) return
+        if (scanStale(gen)) return endScan(gen)
         setStat('正在读取 ' + (i + 1) + '/' + files.length, 'run')
         try {
           var info = await sdk.media.probe(files[i])
+          if (scanStale(gen)) return endScan(gen)
           if (info && info.success && (info.type === 'video' || info.type === 'audio')) {
             accepted.push({
               name: P.displayName(prefs.src, files[i]),
@@ -269,21 +335,24 @@
             renderList()
           }
         } catch (err) {
-          if (gen !== scanGen) return
+          if (scanStale(gen)) return endScan(gen)
           var code = errCode(err)
           if (code === 'HOST_DENIED' || code === 'ENGINE_UNAVAILABLE') {
             rows = []
+            var probeMessage = err.message || '无法读取素材信息'
             $('files-card').classList.add('is-empty')
-            $('empty').innerHTML = '<p>' + escapeHtml(err.message || '无法读取素材信息') + '</p>'
+            $('empty').innerHTML = '<p>' + escapeHtml(probeMessage) + '</p>'
             setStat('未开始', 'err')
-            return
+            return { ok: false, code: code, message: probeMessage }
           }
         }
       }
-      if (gen !== scanGen) return
+      var afterProbe = endScan(gen)
+      if (afterProbe) return afterProbe
       rows = accepted
       renderList()
       setStat(rows.length ? '共 ' + rows.length + ' 个文件' : '未开始', 'idle')
+      return { ok: true, count: rows.length }
     } finally {
       if (gen === scanGen) {
         scanning = false
@@ -329,8 +398,12 @@
   }
 
   async function runQueue() {
-    var format = readFormat()
-    var overwrite = !!$('overwrite').checked
+    var srcRoot = currentJob && currentJob.sourceDir ? currentJob.sourceDir : prefs.src
+    var destRoot = currentJob && currentJob.destDir ? currentJob.destDir : prefs.dest
+    var format = currentJob && currentJob.format ? currentJob.format : readFormat()
+    var overwrite = currentJob && typeof currentJob.overwrite === 'boolean'
+      ? currentJob.overwrite
+      : !!$('overwrite').checked
     var total = rows.length
     var stoppedEarly = ''
     for (var i = 0; i < rows.length; i += 1) {
@@ -342,8 +415,8 @@
       row.detail = ''
       row.progress = '—'
       var paths = {
-        srt: P.outputPath(prefs.src, prefs.dest, row.path, 'srt'),
-        txt: P.outputPath(prefs.src, prefs.dest, row.path, 'txt'),
+        srt: P.outputPath(srcRoot, destRoot, row.path, 'srt'),
+        txt: P.outputPath(srcRoot, destRoot, row.path, 'txt'),
       }
       var exists = {
         srt: await fileExists(paths.srt),
@@ -444,14 +517,15 @@
     if (stoppedEarly === 'busy') {
       setStat(P.BUSY_MESSAGE, 'err')
       notify(P.BUSY_MESSAGE, 'warning')
-      return
+      return 'busy'
     }
     if (stoppedEarly === 'stop' || stopRequested) {
       finishNote('err', '已停止')
-      return
+      return 'stop'
     }
     var failed = countStatus('失败')
     finishNote(failed ? 'err' : 'ok', failed ? '识别完成，失败 ' + failed + ' 条' : '识别完成')
+    return 'done'
   }
 
   function askOverwrite() {
@@ -469,48 +543,237 @@
     })
   }
 
-  async function start() {
-    if (running || starting || scanning || !modelReady) return
-    starting = true
-    syncButtons()
+  async function runAcceptedJob(job, opts) {
+    opts = opts || {}
+    currentJob = job
     try {
-      remember()
-      if (!prefs.src || !prefs.dest || !rows.length) return
-      if ($('overwrite').checked) {
-        var ok = await askOverwrite()
-        if (!ok) return
-      }
-      await persist()
+      setJobLive(true)
+      starting = true
       stopRequested = false
+      syncButtons()
+      if (!opts.skipScan) {
+        job.phase = 'scanning'
+        var scanned = await scan()
+        if (currentJob !== job) return
+        if (stopRequested || (scanned && scanned.code === 'CANCELLED')) {
+          job.phase = 'stopped'
+          job.message = '已停止'
+          setStat('已停止', 'err')
+          notify('已停止', 'warning')
+          return
+        }
+        if (scanned && scanned.code === 'SUPERSEDED') {
+          job.phase = 'failed'
+          job.message = scanned.message
+          setStat(job.message, 'err')
+          return
+        }
+        if (!scanned || scanned.ok === false) {
+          job.phase = 'failed'
+          job.message = (scanned && scanned.message) || '扫描失败'
+          setStat(job.message, 'err')
+          notify(job.message, 'error')
+          return
+        }
+        if (!rows.length) {
+          job.phase = 'done'
+          job.message = '没有找到视频或音频'
+          setStat(job.message, 'idle')
+          notify(job.message, 'info')
+          return
+        }
+      }
+      if (stopRequested) {
+        job.phase = 'stopped'
+        job.message = '已停止'
+        setStat('已停止', 'err')
+        notify('已停止', 'warning')
+        return
+      }
       for (var i = 0; i < rows.length; i += 1) {
         rows[i].status = '等待'
         rows[i].progress = '—'
         rows[i].detail = ''
       }
       renderList()
+      job.phase = 'running'
       setRunning(true)
+      var reason = 'done'
       try {
-        await runQueue()
+        reason = await runQueue()
       } finally {
-        stopRequested = false
         activePath = ''
         setRunning(false)
         renderList()
       }
+      if (currentJob !== job) return
+      if (reason === 'busy') job.phase = 'blocked'
+      else if (reason === 'stop') job.phase = 'stopped'
+      else job.phase = 'done'
+      job.message = $('stat').textContent
     } finally {
+      stopRequested = false
       starting = false
-      syncButtons()
+      setJobLive(false)
+    }
+  }
+
+  async function start() {
+    if (running || starting || scanning || jobLive || !modelReady || modelBlocked) return
+    starting = true
+    syncButtons()
+    try {
+      remember()
+      if (!prefs.src || !prefs.dest || !rows.length) return
+      if ($('overwrite').checked) {
+        var confirmed = await askOverwrite()
+        if (!confirmed) return
+      }
+      await persist()
+      await runAcceptedJob(createJob(), { skipScan: true })
+    } finally {
+      if (!jobLive) {
+        starting = false
+        syncButtons()
+      }
     }
   }
 
   async function stop() {
-    if (!running || stopRequested) return
+    if (!jobLive || stopRequested) return
     stopRequested = true
     syncButtons()
+    if (!running) return
     try {
       await sdk.asr.cancel()
     } catch (_) {
       /* 没有进行中的识别时取消也算成功；失败不挡循环停住 */
+    }
+  }
+
+  function busyJobResult() {
+    return {
+      ok: false,
+      code: 'BUSY',
+      message: '已有一批识别在进行，请用 subtitle_batch_status 查看',
+      jobId: currentJob ? currentJob.id : undefined,
+    }
+  }
+
+  async function prepareDirs(sourceDir, destDir) {
+    var srcInfo
+    try {
+      srcInfo = await sdk.fs.stat(sourceDir)
+    } catch (err) {
+      return (err && err.message) || '无法读取原素材文件夹'
+    }
+    if (!srcInfo) return '原素材文件夹不存在'
+    if (!srcInfo.isDir) return '原素材路径不是文件夹'
+    var destInfo
+    try {
+      destInfo = await sdk.fs.stat(destDir)
+    } catch (err) {
+      return (err && err.message) || '无法读取保存文件夹'
+    }
+    if (destInfo && !destInfo.isDir) return '保存路径不是文件夹'
+    if (!destInfo) {
+      try {
+        await sdk.fs.mkdir(destDir, true)
+      } catch (err) {
+        return (err && err.message) || '无法创建保存文件夹'
+      }
+    }
+    return ''
+  }
+
+  async function mcpStart(args) {
+    var parsed = P.normalizeBatchArgs(args)
+    if (!parsed.ok) return { ok: false, code: parsed.code, message: parsed.message }
+    if (running || starting || jobLive) return busyJobResult()
+    starting = true
+    syncButtons()
+    try {
+      await ensureModel()
+      if (running || jobLive) return busyJobResult()
+      if (!modelReady || modelBlocked) {
+        return {
+          ok: false,
+          code: 'MODEL_NOT_READY',
+          message: $('banner').textContent || '本机语音模型未就绪',
+        }
+      }
+      var dirMessage = await prepareDirs(parsed.value.sourceDir, parsed.value.destDir)
+      if (dirMessage) return { ok: false, code: 'INVALID_PARAM', message: dirMessage }
+      if (running || jobLive) return busyJobResult()
+      prefs.src = parsed.value.sourceDir
+      prefs.dest = parsed.value.destDir
+      prefs.includeSub = parsed.value.includeSubfolders
+      prefs.format = parsed.value.format
+      prefs.overwrite = parsed.value.overwrite
+      fillForm()
+      await persist()
+      rows = []
+      renderList()
+      var job = createJob()
+      runAcceptedJob(job, { skipScan: false }).catch(function (err) {
+        if (currentJob === job && (job.phase === 'scanning' || job.phase === 'running')) {
+          job.phase = 'failed'
+          job.message = err && err.message ? err.message : '识别失败'
+          setStat(job.message, 'err')
+        }
+      })
+      return { ok: true, jobId: job.id, phase: job.phase }
+    } finally {
+      if (!jobLive) {
+        starting = false
+        syncButtons()
+      }
+    }
+  }
+
+  function mcpStatus(args) {
+    var gate = P.matchBatchJob(args && args.jobId, currentJob)
+    if (!gate.ok) return gate
+    return P.summarizeBatch(currentJob, rows)
+  }
+
+  async function mcpStop(args) {
+    var gate = P.matchBatchJob(args && args.jobId, currentJob)
+    if (!gate.ok) return gate
+    if (!jobLive) {
+      return {
+        ok: true,
+        jobId: currentJob.id,
+        stopping: false,
+        phase: currentJob.phase,
+        message: '这一批已经结束',
+      }
+    }
+    await stop()
+    return { ok: true, jobId: currentJob.id, stopping: true }
+  }
+
+  async function registerMcp() {
+    if (!sdk.mcp || typeof sdk.mcp.onCall !== 'function' || typeof sdk.mcp.register !== 'function') return
+    var handlers = {
+      start_subtitle_batch: mcpStart,
+      subtitle_batch_status: mcpStatus,
+      stop_subtitle_batch: mcpStop,
+    }
+    for (var i = 0; i < P.MCP_TOOLS.length; i += 1) {
+      var name = P.MCP_TOOLS[i]
+      sdk.mcp.onCall(name, handlers[name])
+    }
+    try {
+      var listed = P.MCP_TOOLS.map(function (name) { return { name: name } })
+      var res = await sdk.mcp.register(listed)
+      if (res && res.ok === false && typeof sdk.log === 'function') {
+        sdk.log('warn', res.error || '助手工具登记失败')
+      }
+    } catch (err) {
+      if (typeof sdk.log === 'function') {
+        sdk.log('warn', '助手工具登记失败', err && err.message ? err.message : '')
+      }
     }
   }
 
@@ -536,7 +799,7 @@
   }
 
   async function applyDroppedDirectory(event, which) {
-    if (running || starting) {
+    if (running || starting || jobLive) {
       notify('识别进行中，请结束后再设置目录', 'warning')
       return
     }
@@ -572,14 +835,14 @@
     }
     el.addEventListener('dragenter', function (ev) {
       if (!arm(ev)) return
-      if (running || starting) return
+      if (running || starting || jobLive) return
       depth += 1
       el.classList.add('is-drop-target')
     })
     el.addEventListener('dragover', function (ev) {
       if (!arm(ev)) return
-      if (ev.dataTransfer) ev.dataTransfer.dropEffect = running || starting ? 'none' : 'copy'
-      if (!running && !starting) el.classList.add('is-drop-target')
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = running || starting || jobLive ? 'none' : 'copy'
+      if (!running && !starting && !jobLive) el.classList.add('is-drop-target')
     }, true)
     el.addEventListener('dragleave', function (ev) {
       if (!isFile(ev)) return
@@ -613,7 +876,7 @@
   }
 
   async function pickDir(which) {
-    if (running) return
+    if (running || starting || jobLive) return
     var title = which === 'src' ? '选择原素材文件夹' : '选择结果保存文件夹'
     var current = which === 'src' ? prefs.src : prefs.dest
     var dir = await sdk.ui.pickDirectory({ title: title, defaultPath: current || undefined })
@@ -642,11 +905,7 @@
       scheduleRender()
     })
     prefs = await loadPrefs()
-    $('src').value = prefs.src
-    $('dest').value = prefs.dest
-    $('sub').checked = prefs.includeSub
-    $('format').value = prefs.format
-    $('overwrite').checked = prefs.overwrite
+    fillForm()
     $('btn-pick-src').onclick = function () { pickDir('src') }
     $('btn-pick-dest').onclick = function () { pickDir('dest') }
     $('btn-open-dest').onclick = async function () {
@@ -662,19 +921,36 @@
       }
     }
     $('sub').onchange = async function () {
+      if (running || starting || jobLive) {
+        $('sub').checked = prefs.includeSub
+        return
+      }
       await persist()
-      if (!running) await scan()
+      await scan()
     }
-    $('format').onchange = function () { persist() }
-    $('overwrite').onchange = function () { persist() }
+    $('format').onchange = function () {
+      if (running || starting || jobLive) {
+        $('format').value = prefs.format
+        return
+      }
+      persist()
+    }
+    $('overwrite').onchange = function () {
+      if (running || starting || jobLive) {
+        $('overwrite').checked = prefs.overwrite
+        return
+      }
+      persist()
+    }
     $('btn-start').onclick = function () { start() }
     $('btn-stop').onclick = function () { stop() }
     bindFolderDrop($('src'), 'src')
     bindFolderDrop($('dest'), 'dest')
     swallowWindowFileDrop()
     renderList()
-    await checkModel()
-    if (prefs.src) await scan()
+    await registerMcp()
+    await ensureModel()
+    if (!jobLive && !starting && prefs.src) await scan()
     else syncButtons()
   }
 
