@@ -1,0 +1,32 @@
+{
+  "id": "com.pixiucut.batchsubtitle",
+  "name": "批量识别字幕",
+  "version": "1.0.0",
+  "description": "把文件夹里的视频或音频交给本机语音模型，批量识别成字幕文件",
+  "author": "PixiuCut",
+  "main": "index.html",
+  "sdkVersion": "^1.0.0",
+  "permissions": [
+    "asr.transcribe",
+    "fs.read",
+    "fs.write",
+    "media.probe",
+    "ui.pickDirectory",
+    "ui.shell",
+    "ui.notify"
+  ],
+  "slots": [
+    {
+      "id": "home.shortcut",
+      "label": "批量识别字幕",
+      "icon": "assets/icon.svg"
+    }
+  ],
+  "window": {
+    "width": 960,
+    "height": 680,
+    "minWidth": 760,
+    "minHeight": 560,
+    "resizable": true
+  }
+}

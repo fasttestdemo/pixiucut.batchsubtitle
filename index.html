@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>批量识别字幕</title>
+  <link rel="stylesheet" href="assets/app.css" />
+</head>
+<body>
+  <div class="plugin">
+    <header class="hdr">
+      <div class="brand">
+        <div class="mark">字</div>
+        <div>
+          <h1>视频、语音批量识别字幕</h1>
+          <p>把文件夹里的视频或音频交给本机语音模型，批量写成字幕文件</p>
+        </div>
+      </div>
+    </header>
+
+    <div class="banner" id="banner">正在检查本机语音模型…</div>
+
+    <div id="setup">
+      <div class="path-grid">
+        <div class="path-row">
+          <span class="lbl">原素材文件夹</span>
+          <input class="path" id="src" readonly placeholder="点击选择或拖入视频、音频文件夹" />
+          <div class="extra">
+            <button type="button" class="btn" id="btn-pick-src">选择</button>
+            <label class="check"><input type="checkbox" id="sub" /> 包含子文件夹</label>
+          </div>
+        </div>
+        <div class="path-row">
+          <span class="lbl">结果保存文件夹</span>
+          <input class="path" id="dest" readonly placeholder="点击选择或拖入保存目录" />
+          <div class="extra">
+            <button type="button" class="btn" id="btn-pick-dest">选择</button>
+            <button type="button" class="btn" id="btn-open-dest">打开</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="options">
+        <label class="field">输出格式
+          <select id="format">
+            <option value="srt">字幕文件 (srt)</option>
+            <option value="txt">纯文本 (txt)</option>
+            <option value="both">同时输出 srt 和 txt</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="overwrite" /> 覆盖已有文件</label>
+        <span class="note">不勾选则跳过已有结果。勾选后，开始前会再确认一次。</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn pri" id="btn-start" disabled>开始识别</button>
+      <button type="button" class="btn stop" id="btn-stop" disabled>停止识别</button>
+      <div class="stat idle" id="stat">未开始</div>
+    </div>
+
+    <section class="files is-empty" id="files-card">
+      <h2>将处理 <b id="file-count">0</b> 个文件</h2>
+      <div class="flist-head">
+        <span>文件名</span>
+        <span class="col-st">状态</span>
+        <span class="col-pg">进度</span>
+      </div>
+      <div class="empty" id="empty"></div>
+      <div class="flist" id="flist"></div>
+    </section>
+  </div>
+
+  <div class="scrim" id="confirm" hidden>
+    <div class="dialog" role="dialog" aria-labelledby="confirm-title">
+      <h2 id="confirm-title">覆盖已有字幕</h2>
+      <p>将覆盖保存目录中已有的同名字幕文件。已完成的识别不会撤销。</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="confirm-cancel">取消</button>
+        <button type="button" class="btn pri" id="confirm-ok">覆盖并开始</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/folderDropPath.js"></script>
+  <script src="assets/plan.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
