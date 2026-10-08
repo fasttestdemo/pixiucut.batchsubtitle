@@ -29,6 +29,12 @@
 
 同一时间只识别一条。剪辑器里的智能识别如果正在进行，请等它结束后再开始本插件。
 
+## PixiuCut
+
+这个插件跑在 [PixiuCut](https://pixiucut.meitool.cn/) 里。它是装在你自己电脑上的短视频剪辑器：多轨时间线、实时预览、字幕和导出都在本机完成，素材不上传。当前提供 Windows 版，到官网 [pixiucut.meitool.cn](https://pixiucut.meitool.cn/) 下载后，就能从插件管理安装本插件。
+
+官网也有 [插件开发指南](https://pixiucut.meitool.cn/plugins-dev.html)（SDK 1.0.0）。想自己做草稿工具、批量处理或语音识别插件，按指南里的方法名和字段写即可，不必阅读剪辑器源码。
+
 ## 安装
 
 1. 下载本仓库的 zip，或自行把插件目录打成 zip。
@@ -75,7 +81,7 @@ D:\素材\乙\口播.mp4     →  D:\字幕\乙\口播.srt
 node --test assets/plan.test.js
 ```
 
-页面不自带 SDK。在 PixiuCut 里打开插件时，由应用注入。
+页面不自带 SDK。在 PixiuCut 里打开插件时，由应用注入。接口约定以官网 [插件开发指南](https://pixiucut.meitool.cn/plugins-dev.html) 为准。
 
 ## 许可
 
